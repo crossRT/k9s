@@ -45,17 +45,11 @@ func (f Fields) Clone() Fields {
 }
 
 func getValueOfInvalidColumn(f Fields, i int, extractionInfoBag ExtractionInfoBag) string {
-
-	extractionInfo, ok := extractionInfoBag[i]
-
-	// If the extractionInfo is existed in extractionInfoBag,
-	// meaning this column has to retrieve the actual value from other field.
-	// For example: `LABELS[kubernetes.io/hostname]` needs to extract the value from column `LABELS`
-	if ok {
+	if extractionInfo, ok := extractionInfoBag[i]; ok {
 		idxInFields := extractionInfo.IdxInFields
 		escapedKey := escapeDots(extractionInfo.Key)
-		return extractValueFromField(escapedKey, f[idxInFields])
+		value := extractValueFromField(escapedKey, f[idxInFields])
+		return value
 	}
-
 	return NAValue
 }
