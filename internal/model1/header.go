@@ -6,6 +6,7 @@ package model1
 import (
 	"reflect"
 	"regexp"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 )
@@ -15,6 +16,7 @@ const ageCol = "AGE"
 // ExtractionInfo stores data for a field to extract value from another field
 type ExtractionInfo struct {
 	IdxInFields int
+	CustomName  string
 	HeaderName  string
 	Key         string
 }
@@ -74,81 +76,71 @@ func (h Header) Labelize(cols []int, labelCol int, rr *RowEvents) Header {
 	return header
 }
 
-// MapIndices returns a collection of mapped column indices based of the requested columns.
-// And the extraction information used to extract a value for a field from another field.
 func (h Header) MapIndices(cols []string, wide bool) ([]int, ExtractionInfoBag) {
-	ii := make([]int, 0, len(cols))
-	cc := make(map[int]struct{}, len(cols))
-
-	eib := make(ExtractionInfoBag)
-	regex, _ := regexp.Compile(`^(?<HEADER_NAME>.*)\[(?<KEY>.*)\]$`)
+	var (
+		ii   = make([]int, 0, len(cols))
+		eib  = make(ExtractionInfoBag)
+		rgx  = regexp.MustCompile(`^(?:([^:]+):\s*)?(.*)\[(.*)\]$`)
+	)
 
 	for _, col := range cols {
 		idx, ok := h.IndexOf(col, true)
-
-		ii, cc[idx] = append(ii, idx), struct{}{}
-
-		// Continue to next iteration if the column is found
-		if ok {
+		if !ok {
+			log.Warn().Msgf("Column %q not found on resource", col)
+		}
+		
+		ii = append(ii, idx)
+		
+		if !rgx.MatchString(col) {
 			continue
 		}
 
-		log.Warn().Msgf("Column %q not found on resource", col)
-
-		// Continue to next iteration ff the column doesn't match the regex
-		if !regex.MatchString(col) {
-			log.Warn().Msgf("Column %q doesn't match regex pattern", col)
+		matches := rgx.FindStringSubmatch(col)
+		if len(matches) < 4 {
+			log.Error().Msgf("Regex match failed for column: %q", col)
 			continue
 		}
+		
+		customName := strings.TrimSpace(matches[1]) // For example, GROUP
+		headerName := matches[2]                    // For example, LABELS
+		key := matches[3]                           // For example, platform.isolation/nodegroup
 
-		// Check if the column matches the pattern
-		// For example: `LABELS[beta.kubernetes.io/os]` will match
-		matches := regex.FindStringSubmatch(col)
-		headerName := matches[1]
-		key := matches[2]
-
-		// now only support LABELS
 		if headerName != "LABELS" {
 			log.Warn().Msgf("Custom Column %q is not supported", col)
 			continue
 		}
 
-		log.Warn().Msgf("Custom column %q is extracting value with header name: %q and key: %q", col, headerName, key)
-		currentIdx := len(ii) - 1
+		log.Info().Msgf("Custom column %q will be displayed as %q", col, customName)
+
 		idxInFields, _ := h.IndexOf(headerName, true)
-		eib[currentIdx] = ExtractionInfo{idxInFields, headerName, key}
+		eib[len(ii)-1] = ExtractionInfo{idxInFields, customName, headerName, key}
 	}
 
-	if !wide {
-		return ii, eib
-	}
-
-	for i := range h {
-		if _, ok := cc[i]; ok {
-			continue
-		}
-		ii = append(ii, i)
-	}
 	return ii, eib
 }
 
-// Customize builds a header from custom col definitions.
 func (h Header) Customize(cols []string, wide bool) Header {
 	if len(cols) == 0 {
 		return h
 	}
+
 	cc := make(Header, 0, len(h))
 	xx := make(map[int]struct{}, len(h))
-	for _, c := range cols {
+
+	// Get column indices and custom name information
+	_, extractionInfoBag := h.MapIndices(cols, wide)
+
+	for i, c := range cols {
 		idx, ok := h.IndexOf(c, true)
 		if !ok {
-			log.Warn().Msgf("Column %s is not available on this resource", c)
-			cc = append(cc, HeaderColumn{Name: c})
+			cc = append(cc, HeaderColumn{Name: extractionInfoBag[i].CustomName})
 			continue
 		}
 		xx[idx] = struct{}{}
+
 		col := h[idx].Clone()
 		col.Wide = false
+
 		cc = append(cc, col)
 	}
 
@@ -156,6 +148,7 @@ func (h Header) Customize(cols []string, wide bool) Header {
 		return cc
 	}
 
+	// Add wide-column
 	for i, c := range h {
 		if _, ok := xx[i]; ok {
 			continue
@@ -167,6 +160,7 @@ func (h Header) Customize(cols []string, wide bool) Header {
 
 	return cc
 }
+
 
 // Diff returns true if the header changed.
 func (h Header) Diff(header Header) bool {
